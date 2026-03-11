@@ -1,6 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, Search, Upload, Download, Settings, LogOut, LogIn, RotateCcw, CheckCircle, AlertCircle, Edit2, Save, X } from 'lucide-react';
+import { Plus, Trash2, Search, Upload, Download, Settings, LogOut, LogIn, RotateCcw, CheckCircle, AlertCircle, Edit2, Save, X, Cloud } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { createClient } from '@supabase/supabase-js';
+
+// 初始化 Supabase
+const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
+const supabaseKey = process.env.REACT_APP_SUPABASE_ANON_KEY;
+const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
 
 const InventoryCheckingSystem = () => {
   // 基本狀態
@@ -10,6 +16,7 @@ const InventoryCheckingSystem = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   
   // 用戶相關
   const [userName, setUserName] = useState('');
@@ -36,6 +43,13 @@ const InventoryCheckingSystem = () => {
   useEffect(() => {
     setCheckedCount(Object.keys(checkingData).length);
   }, [checkingData]);
+
+  // 檢查 Supabase 連接
+  useEffect(() => {
+    if (!supabase) {
+      console.warn('Supabase 未配置。請檢查環境變量。');
+    }
+  }, []);
 
   // 登入
   const handleLogin = async () => {
@@ -195,22 +209,62 @@ const InventoryCheckingSystem = () => {
     );
   });
 
-  // 記錄點貨
-  const handleProductCheck = (productId, actualQuantity) => {
+  // 記錄點貨 - 帶 Supabase 同步
+  const handleProductCheck = async (productId, actualQuantity) => {
     const quantity = parseInt(actualQuantity);
     if (isNaN(quantity) || quantity < 0) {
       alert('❌ 請輸入有效的數字');
       return;
     }
 
+    const product = products.find(p => p.id === productId);
+    const newCheckData = {
+      actualQuantity: quantity,
+      checkedBy: userName,
+      checkedAt: new Date().toLocaleString('zh-TW'),
+    };
+
+    // 更新本地狀態
     setCheckingData(prev => ({
       ...prev,
-      [productId]: {
-        actualQuantity: quantity,
-        checkedBy: userName,
-        checkedAt: new Date().toLocaleString('zh-TW'),
-      }
+      [productId]: newCheckData
     }));
+
+    // 如果有 Supabase 連接，同時保存到數據庫
+    if (supabase) {
+      setIsSyncing(true);
+      try {
+        const variance = quantity - product.totalQuantity;
+        
+        const { error } = await supabase
+          .from('inventory_checks')
+          .insert([
+            {
+              product_id: productId,
+              product_number: product.productNumber,
+              product_name: product.productName,
+              brand: product.brand,
+              project: product.project,
+              expected_quantity: product.totalQuantity,
+              actual_quantity: quantity,
+              variance: variance,
+              checked_by: userName,
+              checked_at: new Date().toLocaleString('zh-TW'),
+            }
+          ]);
+
+        if (error) {
+          console.error('Supabase 保存錯誤:', error);
+          // 繼續運行，不中斷用戶體驗
+        } else {
+          // 靜默保存成功，不打擾用戶
+        }
+      } catch (error) {
+        console.error('同步到 Supabase 失敗:', error);
+      } finally {
+        setIsSyncing(false);
+      }
+    }
   };
 
   // 刪除點貨紀錄
@@ -295,6 +349,12 @@ const InventoryCheckingSystem = () => {
             </div>
             <h1 className="text-4xl font-bold text-white mb-2">庫存點貨系統</h1>
             <p className="text-white/60">精確掌握庫存，輕鬆管理物品</p>
+            {supabase && (
+              <p className="text-cyan-400 text-sm mt-2 flex items-center justify-center gap-1">
+                <Cloud className="w-4 h-4" />
+                已連接 Supabase 雲端同步
+              </p>
+            )}
           </div>
 
           <button
@@ -349,6 +409,18 @@ const InventoryCheckingSystem = () => {
               庫存點貨系統
             </h1>
             <p className="text-white/60 text-sm mt-1">歡迎，{userName}</p>
+            {supabase && !isSyncing && (
+              <p className="text-green-400 text-xs mt-1 flex items-center gap-1">
+                <Cloud className="w-3 h-3" />
+                ✓ 已連接 Supabase
+              </p>
+            )}
+            {isSyncing && (
+              <p className="text-yellow-400 text-xs mt-1 flex items-center gap-1">
+                <Cloud className="w-3 h-3 animate-spin" />
+                正在同步...
+              </p>
+            )}
           </div>
           
           <div className="flex items-center gap-3">
